@@ -1,2 +1,1 @@
-# terraform-google-inception
-Google Cloud Inception
+# my-gcp-sandbox-workstations
