@@ -110,7 +110,7 @@ resource "google_compute_network" "default" {
   auto_create_subnetworks = false
 }
 resource "google_compute_subnetwork" "default" {
-  name = "management"
+  name = format( "%s-%s", resource.google_compute_network.default.name, "management" )
   #
   ip_cidr_range = "10.2.1.0/24"
   region        = var.gcpRegion
