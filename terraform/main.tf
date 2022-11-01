@@ -103,6 +103,17 @@ resource "google_dns_record_set" "default-ds" {
   rrdatas = [data.google_dns_keys.default.key_signing_keys[0].ds_record]
 }
 ## ---------------------------------------------------
+## Active Directory custom domain verification
+## ---------------------------------------------------
+resource "google_dns_record_set" "azure-activeDirectoryDomain" {
+  name         = resource.google_dns_managed_zone.default.dns_name
+  managed_zone = resource.google_dns_managed_zone.default.name
+  #
+  type    = "TXT"
+  ttl     = 3600
+  rrdatas = [ var.azActiveDirectoryDomainVerificationTxt ]
+}
+## ---------------------------------------------------
 ## ---------------------------------------------------
 resource "google_compute_network" "default" {
   name = resource.google_dns_managed_zone.default.name
