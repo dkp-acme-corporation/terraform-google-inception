@@ -1,0 +1,261 @@
+#
+#
+# BOF
+---
+
+name: Standard workflow 
+run-name: Standard workflow run by ${{ github.actor }}
+on:
+  push:
+   branches-ignore:
+     - 'main'
+  workflow_dispatch:
+
+# Relative paths will be under the $GITHUB_WORKSPACE directory
+env:
+  TERRAFORM_CODE_PATH: ./terraform
+  #
+  TF_IN_AUTOMATION: true
+  TF_TOKEN_app_terraform_io: ${{ secrets.TF_CLOUD_TOKEN }}
+  TF_CLOUD_ORGANIZATION: ${{ secrets.TF_CLOUD_ORGANIZATION }}
+  #
+  GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+  #
+  TF_VAR_gcpProject: ${{ secrets.TF_VAR_GCPPROJECT }}
+  TF_VAR_gcpRegion: ${{ secrets.TF_VAR_GCPREGION }}
+  TF_VAR_gcpZone: ${{ secrets.TF_VAR_GCPZONE }}
+  # 
+  TF_VAR_azActiveDirectoryDomainVerificationTxt: ${{ secrets.TF_VAR_AZACTIVEDIRECTORYDOMAINVERIFICATIONTXT }}
+  
+defaults:
+  run: 
+    shell: bash
+
+jobs:
+  preparation:
+    runs-on: ubuntu-latest
+    env: 
+      TERRAFORM_VERSION: 1.3.3
+    # 
+    steps:
+      ## ---------------------------------------------------
+      - name: Initialization
+        run: |
+          echo "TF_WORKSPACE=$(basename ${{ github.repository }})" >> $GITHUB_ENV
+      ## ---------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      ## ---------------------------------------------------
+      - name: Cache setup
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            /usr/local/bin/terraform
+            ${{ env.TERRAFORM_CODE_PATH }}/.terraform
+          key: ${{ runner.os }}-terraform-${{ github.ref_name }}
+      ## ---------------------------------------------------
+      - name: Terraform installation
+        id: terraform-install
+        #
+        run: |
+          wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt update
+          sudo apt install terraform=${{ env.TERRAFORM_VERSION }}
+      ## ---------------------------------------------------
+      - name: Terraform install validataion
+        id: terraform-install-validate
+        run: |
+          pwd
+          find .
+          set
+          terraform version
+      ## ---------------------------------------------------
+      - name: Terraform initialization
+        id: terraform-init
+        run: |
+          cd ${{ env.TERRAFORM_CODE_PATH }}
+          terraform init
+  validation:
+    runs-on: ubuntu-latest
+    needs: [ preparation ]
+    #
+    steps:
+      ## ---------------------------------------------------
+      - name: Initialization
+        run: |
+          echo "TF_WORKSPACE=$(basename ${{ github.repository }})" >> $GITHUB_ENV
+      ## ---------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      ## ---------------------------------------------------
+      - name: Cache setup
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: |
+              /usr/local/bin/terraform
+              ${{ env.TERRAFORM_CODE_PATH }}/.terraform
+          key: ${{ runner.os }}-terraform-${{ github.ref_name }}
+      ## ---------------------------------------------------
+      - name: debug
+        run: |
+          cd ${{ env.TERRAFORM_CODE_PATH }}
+          ls -lRa
+      ## ---------------------------------------------------
+      - name: Terraform Validate
+        run: |
+          cd ${{ env.TERRAFORM_CODE_PATH }}
+          terraform init
+          terraform validate
+      ## ---------------------------------------------------
+      - name: Terraform Format
+        run: |
+          terraform fmt -recursive -diff
+          #
+          git config user.email github-actions@github.com
+          git config user.name github-actions
+          #
+          TMP=$(git add --update **/*.tf **/*.tfvars)
+          #
+          if [ -n "$(git status | grep 'nothing to commit')" ]; then
+            echo "No updates required to code format" 
+          else
+            # commit the needed changes
+            git commit --message "GitHub Run ID[${{ github.run_id }}] updated code format" 
+            # push the updated code back into the repo
+            git push
+            #
+            echo "Updates to the repository completed successfully" 
+          fi
+  scanning-trivy:
+    runs-on: ubuntu-latest
+    needs: [ validation ]
+    env: 
+      OUTPUTFILE: trivy-results.sarif
+    #
+    steps:
+      ## ---------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      ## ---------------------------------------------------
+      - name: Trivy IaC vulnerability scan
+        # src: https://github.com/aquasecurity/trivy-action
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: ${{ env.TERRAFORM_CODE_PATH }}
+          hide-progress: false
+          format: 'sarif'
+          output: ${{ env.OUTPUTFILE }}
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'MEDIUM,HIGH,CRITICAL'
+      ## ---------------------------------------------------
+      - name: Trivy IaC vulnerability scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: ${{ env.OUTPUTFILE }}
+  scanning-snyk:
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status 
+    runs-on: ubuntu-latest
+    needs: [ validation ]
+    env: 
+      OUTPUTFILE: snyk.sarif
+    strategy:
+      matrix:
+        files:
+          - main.tf
+          - outputs.tf
+          - variables.tf
+    steps:
+      ## ---------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      ## ---------------------------------------------------
+      - name: Snyk IaC vulnerability scan
+        # Snyk can be used to break the build when it detects security issues.
+        # In this case we want to upload the issues to GitHub Code Scanning
+        continue-on-error: true
+        # https://github.com/snyk/actions
+        uses: snyk/actions/iac@14818c4695ecc4045f33c9cee9e795a788711ca4
+        env:
+          # In order to use the Snyk Action you will need to have a Snyk API token.
+          # More details in https://github.com/snyk/actions#getting-your-snyk-token
+          # or you can signup for free at https://snyk.io/login
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          # Add the path to the configuration file that you would like to test.
+          # For example `deployment.yaml` for a Kubernetes deployment manifest
+          # or `main.tf` for a Terraform configuration file
+          file: ${{ env.TERRAFORM_CODE_PATH }}/${{ matrix.files }}
+          sarif: true
+          # Note: the  --sarif-file-output=${{ matrix.files }}.sarif has no affect
+          args: --severity-threshold=medium 
+
+      - name: debug
+        run: |
+          find . -name *.sarif
+      ## ---------------------------------------------------
+      - name: Snyk IaC vulnerability scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: ${{ env.OUTPUTFILE }}
+  testing:
+    runs-on: ubuntu-latest
+    needs: [ scanning-trivy, scanning-snyk ]
+    #
+    steps:
+      ## ---------------------------------------------------
+      - name: Initialization
+        run: |
+          echo "TF_WORKSPACE=$(basename ${{ github.repository }})" >> $GITHUB_ENV
+      ## ---------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      ## ---------------------------------------------------
+      - name: Cache setup
+        id: cache
+        uses: actions/cache@v3
+        with:
+          path: |
+              /usr/local/bin/terraform
+              ${{ env.TERRAFORM_CODE_PATH }}/.terraform
+          key: ${{ runner.os }}-terraform-${{ github.ref_name }}
+      ## ---------------------------------------------------
+      - name: Terraform Plan
+        run: |
+          cd ${{ env.TERRAFORM_CODE_PATH }}
+          terraform init
+          terraform plan
+  pull-request:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    needs: [ testing ]
+    steps:
+      ## ---------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v3
+      ## ---------------------------------------------------
+      - name: Create Pull Request
+        id: create-pull-request
+        if: github.ref_name == 'development'
+        uses: repo-sync/pull-request@v2
+        with:
+          destination_branch: main
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      ## ---------------------------------------------------
+      - name: Check outputs
+        if: ${{ steps.create-pull-request.outputs.pr_number }}
+        run: |
+          echo "Pull Request Number - ${{ steps.create-pull-request.outputs.pr_number }}"
+          echo "Pull Request URL - ${{ steps.create-pull-request.outputs.pr_url }}"
+
+...
+# EOF

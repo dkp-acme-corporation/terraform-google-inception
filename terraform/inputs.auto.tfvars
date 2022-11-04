@@ -1,0 +1,3 @@
+#BOF
+rootDnsZoneName = "sandbox"
+#EOF
